@@ -1,8 +1,8 @@
 {
-  "name": "@zenobius/pi-dcp",
-  "version": "0.1.0",
+  "name": "@digi4care/pi-dcp",
+  "version": "0.1.0-node",
   "type": "module",
-  "description": "Dynamic Context Pruning extension for pi - intelligently removes obsolete messages to optimize token usage",
+  "description": "Dynamic Context Pruning extension for pi - Node.js compatible fork",
   "main": "./index.ts",
   "keywords": [
     "pi",
@@ -14,8 +14,8 @@
   "author": "",
   "license": "MIT",
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*",
-    "@mariozechner/pi-agent-core": "*"
+    "@mariozechner/pi-agent-core": "*",
+    "@mariozechner/pi-coding-agent": "*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
@@ -27,6 +27,6 @@
     ]
   },
   "dependencies": {
-    "bunfig": "^0.15.6"
+    "zod": "^4.3.6"
   }
 }

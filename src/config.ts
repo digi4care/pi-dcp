@@ -1,160 +1,145 @@
 /**
- * Configuration management using bunfig
+ * Configuration management - Node.js compatible with zod typesafety
  */
 
+import { z } from "zod";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { DcpConfigWithPruneRuleObjects, DcpConfigWithRuleRefs, PruneRule, isPruneRuleObject, type DcpConfig } from "./types";
-import { loadConfig as bunfigLoad } from "bunfig";
 import { getRule, getRuleNames } from "./registry";
+
+// Zod schema for config validation
+const DcpConfigSchema = z.object({
+	enabled: z.boolean().default(true),
+	debug: z.boolean().default(false),
+	rules: z.array(z.string()).default([
+		"deduplication",
+		"superseded-writes",
+		"error-purging",
+		"tool-pairing",
+		"recency"
+	]),
+	keepRecentCount: z.number().int().positive().default(10),
+});
+
+type DcpConfigZod = z.infer<typeof DcpConfigSchema>;
 
 /**
  * Default configuration
  */
 const DEFAULT_CONFIG: DcpConfigWithRuleRefs = {
 	enabled: true,
-	debug: true,
+	debug: false,
 	rules: ["deduplication", "superseded-writes", "error-purging", "tool-pairing", "recency"],
 	keepRecentCount: 10,
 };
 
 /**
- * Load configuration from extension settings, files, or defaults
+ * Load configuration from environment variables or defaults
  * Priority (highest to lowest):
  * 1. CLI flags (--dcp-enabled, --dcp-debug)
- * 2. Config file in current directory (dcp.config.ts, etc.)
- * 3. Config file in home directory (~/.dcprc)
- * 4. Default configuration
+ * 2. Environment variables (DCP_ENABLED, DCP_DEBUG, DCP_RULES, DCP_KEEP_RECENT)
+ * 3. Default configuration
  */
 export async function loadConfig(pi: ExtensionAPI): Promise<DcpConfigWithPruneRuleObjects> {
-	// bunfig automatically searches for config files in cwd and home directory
-	// It supports: dcp.config.{ts,js,json,toml,yaml}, .dcprc{,.json,.toml,.yaml}
-	// and package.json with "dcp" key
-	const config = await bunfigLoad<DcpConfigWithRuleRefs>({
-		name: "pi-dcp",
-		cwd: process.cwd(),
-		defaultConfig: DEFAULT_CONFIG,
-		checkEnv: true, // Allow DCP_ENABLED, DCP_DEBUG, etc.
+	// Build config from environment variables
+	const envConfig: Partial<DcpConfigZod> = {};
+
+	if (process.env.DCP_ENABLED !== undefined) {
+		envConfig.enabled = process.env.DCP_ENABLED === 'true';
+	}
+	if (process.env.DCP_DEBUG !== undefined) {
+		envConfig.debug = process.env.DCP_DEBUG === 'true';
+	}
+	if (process.env.DCP_KEEP_RECENT !== undefined) {
+		const parsed = parseInt(process.env.DCP_KEEP_RECENT, 10);
+		if (!isNaN(parsed) && parsed > 0) {
+			envConfig.keepRecentCount = parsed;
+		}
+	}
+	if (process.env.DCP_RULES !== undefined) {
+		try {
+			const parsed = JSON.parse(process.env.DCP_RULES);
+			if (Array.isArray(parsed)) {
+				envConfig.rules = parsed;
+			}
+		} catch {
+			console.warn('[pi-dcp] Warning: Invalid DCP_RULES JSON, using defaults');
+		}
+	}
+
+	// Apply zod validation and merge with defaults
+	const validated = DcpConfigSchema.parse({
+		...DEFAULT_CONFIG,
+		...envConfig,
 	});
 
 	// Apply flag overrides (highest priority)
 	const enabled = pi.getFlag("--dcp-enabled");
 	const debug = pi.getFlag("--dcp-debug");
+	const keepRecent = pi.getFlag("--dcp-keep-recent");
+
+	if (enabled !== undefined) {
+		validated.enabled = enabled as boolean;
+	}
+	if (debug !== undefined) {
+		validated.debug = debug as boolean;
+	}
+	if (keepRecent !== undefined) {
+		validated.keepRecentCount = parseInt(keepRecent as string, 10);
+	}
 
 	// Filter out invalid rules
 	const availableRuleNames = getRuleNames();
-
 	const invalidRuleNames: string[] = [];
 
-	const rules: PruneRule[] = config.rules
-		.filter((rule) => {
-			if (isPruneRuleObject(rule)) {
-				return true; // Keep non-string rules (custom rule objects)
+	const rules: PruneRule[] = validated.rules
+		.filter((rule): rule is string => {
+			if (availableRuleNames.includes(rule)) {
+				return true;
 			}
-			if (typeof rule === 'string' && availableRuleNames.includes(rule)) {
-				return true; // Valid rule name
-			}
-			invalidRuleNames.push(typeof rule === 'string' ? rule : JSON.stringify(rule));
-			return false; // Remove invalid rule names
+			invalidRuleNames.push(rule);
+			return false;
 		})
-		.map((rule) => {
-			if (typeof rule === "string") {
-				return getRule(rule)!; // Non-null due to filtering above
-			}
-			return rule;
-			// convert string rule name to rule object
-		})
-
-
-	if (enabled !== undefined) {
-		config.enabled = enabled as boolean;
-	}
-	if (debug !== undefined) {
-		config.debug = debug as boolean;
-	}
+		.map((rule) => getRule(rule)!);
 
 	// Log invalid rules if debug is enabled
-	if (config.debug && invalidRuleNames.length > 0) {
-		console.warn(`[pi-dcp] Warning: The following configured rules are invalid and will be ignored: ${invalidRuleNames.join(", ")}`);
+	if (validated.debug && invalidRuleNames.length > 0) {
+		console.warn(`[pi-dcp] Warning: Invalid rules ignored: ${invalidRuleNames.join(", ")}`);
 	}
 
 	return {
-		...config,
+		enabled: validated.enabled,
+		debug: validated.debug,
+		keepRecentCount: validated.keepRecentCount,
 		rules,
-	}
+	};
 }
 
 /**
- * Get default configuration (useful for testing or displaying defaults)
+ * Get default configuration
  */
 export function getDefaultConfig(): DcpConfig {
 	return { ...DEFAULT_CONFIG };
 }
 
-
 /**
  * Generate sample configuration file content
- * Used by the init command to create dcp.config.ts
  */
-export function generateConfigFileContent(options?: { simplified?: boolean }): string {
-	const simplified = options?.simplified ?? false;
-
-	if (simplified) {
-		return `/**
+export function generateConfigFileContent(): string {
+	return `/**
  * DCP (Dynamic Context Pruning) Configuration
  * 
- * Place this file as:
- * - ./dcp.config.ts (project-specific)
- * - ~/.dcprc (user-wide)
+ * Environment variables:
+ * - DCP_ENABLED=true/false
+ * - DCP_DEBUG=true/false  
+ * - DCP_KEEP_RECENT=10
+ * - DCP_RULES='["deduplication", "recency"]'
  */
-
-import type { DcpConfig } from "~/.pi/agent/extensions/pi-dcp/src/types";
 
 export default {
 	enabled: true,
 	debug: false,
 	rules: ["deduplication", "superseded-writes", "error-purging", "tool-pairing", "recency"],
-	keepRecentCount: 10,
-} satisfies DcpConfig;
-`;
-	}
-
-	return `/**
- * DCP (Dynamic Context Pruning) Configuration
- * 
- * This file configures the pi-dcp extension for intelligent context pruning.
- * 
- * Place this file as:
- * - ./dcp.config.ts (project-specific configuration)
- * - ~/.dcprc (user-wide configuration)
- * 
- * All fields are optional - defaults will be used for missing values.
- */
-
-import type { DcpConfig } from "~/.pi/agent/extensions/pi-dcp/src/types";
-
-export default {
-	// Enable/disable DCP entirely
-	enabled: true,
-
-	// Enable debug logging to see what gets pruned
-	debug: false,
-
-	// Rules to apply (in order of execution)
-	// Available built-in rules:
-	// - "deduplication": Remove duplicate tool outputs
-	// - "superseded-writes": Remove older file versions
-	// - "error-purging": Remove resolved errors
-	// - "tool-pairing": Preserve tool_use/tool_result pairing (CRITICAL)
-	// - "recency": Always keep recent messages
-	rules: [
-		"deduplication",
-		"superseded-writes",
-		"error-purging",
-		"tool-pairing",
-		"recency",
-	],
-
-	// Number of recent messages to always keep (for recency rule)
 	keepRecentCount: 10,
 } satisfies DcpConfig;
 `;
@@ -162,19 +147,14 @@ export default {
 
 /**
  * Write configuration file to the specified path
- * 
- * @param path - Full path where to write the config file
- * @param options - Options for file generation
- * @returns Promise that resolves when file is written
  */
 export async function writeConfigFile(
 	path: string,
-	options?: { force?: boolean; simplified?: boolean }
+	options?: { force?: boolean }
 ): Promise<void> {
 	const fs = await import("fs/promises");
 	const force = options?.force ?? false;
 
-	// Check if file already exists
 	if (!force) {
 		try {
 			await fs.access(path);
@@ -183,10 +163,9 @@ export async function writeConfigFile(
 			if (error.code !== "ENOENT") {
 				throw error;
 			}
-			// File doesn't exist, proceed
 		}
 	}
 
-	const content = generateConfigFileContent(options);
+	const content = generateConfigFileContent();
 	await fs.writeFile(path, content, "utf-8");
 }

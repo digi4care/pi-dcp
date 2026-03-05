@@ -1,99 +1,62 @@
 # Configuration Guide
 
-Pi-DCP uses [bunfig](https://bunfig.sh) for flexible, type-safe configuration management.
+> **Node.js compatible with zod typesafety!**
 
 ## Configuration Priority
 
 Configuration is loaded in the following priority order (highest to lowest):
 
 1. **CLI Flags** - Override any config value
-2. **Project Config** - `./dcp.config.ts` in current working directory
-3. **User Config** - `~/.dcprc` in home directory
-4. **Default Config** - Built-in defaults
+2. **Environment Variables** - Set in shell or .env
+3. **Default Config** - Built-in defaults (validated with zod)
 
-## Configuration File Formats
+## Environment Variables
 
-Bunfig supports multiple configuration file formats:
+| Variable | Type | Description | Default |
+|----------|------|-------------|---------|
+| `DCP_ENABLED` | boolean | Enable/disable DCP | true |
+| `DCP_DEBUG` | boolean | Enable debug logging | false |
+| `DCP_KEEP_RECENT` | number | Number of recent messages to keep | 10 |
+| `DCP_RULES` | JSON array | Rules to apply | all |
 
-- **TypeScript**: `dcp.config.ts` (recommended, provides type safety)
-- **JavaScript**: `dcp.config.js`
-- **JSON**: `dcp.config.json` or `.dcprc.json`
-- **TOML**: `dcp.config.toml`
-- **YAML**: `dcp.config.yaml`
-- **RC File**: `.dcprc` (JSON format)
+### Zod Validation
 
-## Configuration Options
-
-```typescript
-export interface DcpConfig {
-  // Enable/disable DCP entirely
-  enabled: boolean;
-
-  // Enable debug logging
-  debug: boolean;
-
-  // Rules to apply (in order)
-  rules: Array<string | PruningRule>;
-
-  // Number of recent messages to always keep
-  keepRecentCount: number;
-}
-```
-
-## Example Configurations
-
-### TypeScript (Recommended)
-
-Create `dcp.config.ts`:
+All env vars are validated with zod:
 
 ```typescript
-import type { DcpConfig } from "@pi-dcp/types";
-
-export default {
-  enabled: true,
-  debug: false,
-  rules: [
-    "deduplication",
-    "superseded-writes",
-    "error-purging",
-    "recency"
-  ],
-  keepRecentCount: 10,
-} satisfies DcpConfig;
+const DcpConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  debug: z.boolean().default(false),
+  rules: z.array(z.string()).default([...]),
+  keepRecentCount: z.number().int().positive().default(10),
+});
 ```
 
-### JSON
+If a value is invalid, the default is used.
 
-Create `.dcprc`:
+### Example
 
-```json
-{
-  "enabled": true,
-  "debug": false,
-  "rules": [
-    "deduplication",
-    "superseded-writes",
-    "error-purging",
-    "recency"
-  ],
-  "keepRecentCount": 10
-}
+```bash
+# .env file
+DCP_ENABLED=true
+DCP_DEBUG=false
+DCP_KEEP_RECENT=10
+
+# Or in shell
+export DCP_ENABLED=true
+export DCP_DEBUG=false
+export DCP_KEEP_RECENT=15
 ```
 
-### TOML
+### Rules as Environment Variable
 
-Create `dcp.config.toml`:
-
-```toml
-enabled = true
-debug = false
-rules = ["deduplication", "superseded-writes", "error-purging", "recency"]
-keepRecentCount = 10
+```bash
+export DCP_RULES='["deduplication", "recency"]'
 ```
 
 ## CLI Flags
 
-Override configuration values with CLI flags:
+Override configuration with CLI flags:
 
 ```bash
 # Disable DCP for this session
@@ -102,9 +65,37 @@ pi --dcp-enabled=false
 # Enable debug logging
 pi --dcp-debug=true
 
+# Set recent messages
+pi --dcp-keep-recent=15
+
 # Combine flags
-pi --dcp-enabled=true --dcp-debug=true
+pi --dcp-enabled=true --dcp-debug=true --dcp-keep-recent=20
 ```
+
+## Configuration Options
+
+```typescript
+// Zod schema
+const DcpConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  debug: z.boolean().default(false),
+  rules: z.array(z.string()).default([...]),
+  keepRecentCount: z.number().int().positive().default(10),
+});
+
+// TypeScript type (inferred from zod)
+type DcpConfig = z.infer<typeof DcpConfigSchema>;
+```
+
+## Available Rules
+
+Built-in pruning rules:
+
+1. **deduplication** - Remove duplicate tool outputs
+2. **superseded-writes** - Remove older file versions
+3. **error-purging** - Remove resolved errors
+4. **tool-pairing** - Preserve tool_use/tool_result pairing (CRITICAL)
+5. **recency** - Always keep recent messages
 
 ## Runtime Commands
 
@@ -115,146 +106,54 @@ DCP provides commands to adjust configuration during a session:
 - `/dcp-recent <number>` - Set number of recent messages to keep
 - `/dcp-stats` - Show pruning statistics
 
-## Available Rules
-
-Built-in pruning rules:
-
-1. **deduplication** - Remove duplicate tool outputs
-2. **superseded-writes** - Remove older file versions
-3. **error-purging** - Remove resolved errors
-4. **recency** - Always keep recent messages
-
-Rules are applied in the order specified in the `rules` array.
-
-## Configuration Locations
-
-### Project-Specific
-
-Best for team settings or project requirements:
+## Quick Start
 
 ```bash
-# Create in project root
-cd /path/to/project
-touch dcp.config.ts
+# Start pi with defaults
+pi
+
+# Or with custom settings via .env
+export DCP_DEBUG=true
+export DCP_KEEP_RECENT=15
+pi
 ```
 
-### User-Wide
+## Debug Mode
 
-Best for personal preferences:
+Enable debug logging to see what's being pruned:
 
 ```bash
-# Create in home directory
-touch ~/.dcprc
+DCP_DEBUG=true pi
 ```
 
-### Extension Default
-
-The extension includes a default configuration at:
+Example output:
 ```
-devtools/files/pi/agent/extensions/pi-dcp/dcp.config.ts
-```
-
-This serves as a fallback and reference example.
-
-## Type Safety
-
-When using TypeScript configuration files, you get:
-
-- Autocomplete for configuration options
-- Type checking for values
-- IntelliSense documentation
-- Compile-time validation
-
-```typescript
-import type { DcpConfig } from "@pi-dcp/types";
-
-// Type error if you misspell or use wrong type
-export default {
-  enabled: "yes", // ❌ Type error: must be boolean
-  debugg: true,   // ❌ Type error: unknown property
-  rules: [],
-  keepRecentCount: -5, // ✅ Type-safe but validation will catch at runtime
-} satisfies DcpConfig;
+[pi-dcp] Pruned 12 / 45 messages
+[pi-dcp]   - deduplication: 3
+[pi-dcp]   - superseded-writes: 5
+[pi-dcp]   - error-purging: 2
+[pi-dcp]   - recency: 2
 ```
 
 ## Troubleshooting
 
-### Configuration Not Loading
+### Extension not loading
 
-1. Check file location and naming
-2. Ensure valid syntax (JSON/TOML/TypeScript)
-3. Enable debug mode: `--dcp-debug=true`
-4. Check console for error messages
+1. Check if pi-dcp is correctly installed: `pi list`
+2. Check startup output for errors
+3. Try with debug: `DCP_DEBUG=true pi`
 
-### Validation Errors
+### Invalid env var value
 
-If configuration fails validation, DCP will log the error and disable itself:
-
+Zod logs a warning if a value is invalid:
 ```
-[pi-dcp] Configuration error: Unknown rule: "typo"
-[pi-dcp] Extension disabled due to configuration error
+[pi-dcp] Warning: Invalid DCP_RULES JSON, using defaults
 ```
 
-### Config File Discovery
+The default is then used.
 
-DCP searches for config files in this order:
+### No pruning effect
 
-1. Current working directory
-2. Home directory
-3. Extension directory (default fallback)
-
-Use debug mode to see which config file is loaded:
-
-```bash
-pi --dcp-debug=true
-```
-
-## Advanced Usage
-
-### Custom Rule Order
-
-Change the order of rules to adjust pruning behavior:
-
-```typescript
-export default {
-  rules: [
-    "recency",           // Protect recent messages first
-    "error-purging",     // Then clean up errors
-    "deduplication",     // Then deduplicate
-    "superseded-writes"  // Finally remove old file versions
-  ],
-  keepRecentCount: 15,
-} satisfies DcpConfig;
-```
-
-### Minimal Configuration
-
-Only specify what you want to change from defaults:
-
-```typescript
-export default {
-  keepRecentCount: 20, // Only override this, use defaults for rest
-} satisfies DcpConfig;
-```
-
-### Disable Specific Rules
-
-```typescript
-export default {
-  rules: [
-    "deduplication",
-    // Omit "superseded-writes" to disable it
-    "error-purging",
-    "recency"
-  ],
-} satisfies DcpConfig;
-```
-
-## Best Practices
-
-1. **Use TypeScript configs** for type safety
-2. **Start with defaults** and adjust based on needs
-3. **Use project configs** for team settings
-4. **Use user configs** for personal preferences
-5. **Test with debug mode** when changing configuration
-6. **Monitor with `/dcp-stats`** to see pruning effectiveness
+1. Check if DCP is active: `/dcp-stats`
+2. Make sure you have enough messages (> keepRecentCount)
+3. Check debug output for details
